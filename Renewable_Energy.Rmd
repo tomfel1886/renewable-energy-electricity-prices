@@ -1,0 +1,522 @@
+---
+title: "Bachelorthesis"
+author: "Thomas Felder"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+knitr::opts_knit$set #Adjust the working directory on other device!
+```
+
+# Average Change in hourly prices
+
+## 1.) Preparation
+
+### 1.1) laod packages and data
+
+```{r}
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(gridExtra)
+library(broom)
+library(reshape2)
+```
+
+```{r}
+Data_BA <- read_excel("Data_BA.xlsx")
+head(Data_BA)
+```
+
+### 1.2) Analysis of dataset and adjustments
+```{r}
+# Checking for NA's
+colSums(is.na(Data_BA))
+```
+```{r}
+# Checking Class of Data
+sapply(Data_BA,class)
+```
+Day ahead is declared as character because negative values have a "," as delimiter istead of "."
+This needs to be changed
+
+```{r}
+#Substituting "," with "."
+Data_BA$Day_ahead <- gsub(",", ".", Data_BA$Day_ahead)
+Data_BA$Day_ahead <- as.numeric(Data_BA$Day_ahead)
+```
+
+Further adjustments so that the date has the correct format. Year, month and hours columns are also added.
+
+```{r}
+Data_BA$Date_from <- as.POSIXct(Data_BA$Date_from, format="%d.%m.%Y %H:%M", tz="UTC")
+Data_BA$Date_to <- as.POSIXct(Data_BA$Date_to, format="%d.%m.%Y %H:%M", tz="UTC")
+
+Data_BA$date <- as.Date(Data_BA$Date_from)
+Data_BA$hour <- hour(Data_BA$Date_from)
+Data_BA$year <- format(Data_BA$Date_from, "%Y")
+Data_BA$Month <- factor(Data_BA$Month, levels = 1:12, labels = c(
+  "January", "February", "March", "April", "May", "June", 
+  "July", "August", "September", "October", "November", "December"))
+```
+
+In our analysis we use the lagged gas price, so we need to adjust this as well.
+
+```{r}
+Data_BA$lagged_Gas_Price <- c(rep(NA, 24), Data_BA$Gas_Price[1:(nrow(Data_BA) - 24)])
+```
+
+```{r}
+Df <- Data_BA[-(1:24),]
+```
+
+Finally, we need to create daily aggregates of solar and wind generation in GWh.
+
+```{r}
+daily_totals <- Df %>%
+  group_by(date) %>%
+  summarize(total_daily_solar = sum(PH, na.rm = TRUE)/1000,
+            total_daily_wind = sum(Wind_Total, na.rm = TRUE)/1000)
+
+
+Df2 <- merge(Df, daily_totals, by = "date")
+head(Df2)
+```
+
+## 2.) Estimation
+
+```{r}
+results_Wind <- list()
+
+for (h in 0:23) {
+  # Filter data for the specific hour
+  Df_hourly <- Df2 %>% filter(hour == h)
+  
+  # Regression
+  formula <- Day_ahead ~ total_daily_solar + total_daily_wind + lagged_Gas_Price + Lignite + Load + Month
+  
+  # Fit the model
+  model <- lm(formula, data = Df_hourly)
+  
+  
+  results_Wind[[h + 1]] <- tidy(model) %>% filter(term == c("total_daily_wind")) %>% select(estimate, std.error) %>%
+    mutate(estimate = estimate , std.error = std.error)
+}
+
+
+results_df_Wind <- do.call(rbind, results_Wind)
+results_df_Wind$hour <- 0:23
+
+# Confidence intervals
+results_df_Wind <- results_df_Wind %>%
+  mutate(
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+
+# Plotting
+M_Wind <- ggplot(results_df_Wind, aes(x = hour, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    title = "Change in Day Ahead Price per GWh of Daily Wind",
+    x = "Hour",
+    y = "Change in Avg. Hourly Price (€/MWh)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.margin = unit(c(1, 1, 1, 1), "cm"), 
+    axis.title.y = element_text(angle = 90, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+# Solar
+
+results_Solar <- list()
+
+for (h in 0:23) {
+  # Filter data for the specific hour
+  Df_hourly <- Df2 %>% filter(hour == h)
+  
+  # Regression
+  formula <- Day_ahead ~ total_daily_solar + total_daily_wind + lagged_Gas_Price + Lignite + Load + Month
+  
+  # Fit the model
+  model <- lm(formula, data = Df_hourly)
+  
+  
+  results_Solar[[h + 1]] <- tidy(model) %>% filter(term == c("total_daily_solar")) %>% select(estimate, std.error) %>%
+    mutate(estimate = estimate, std.error = std.error)
+}
+
+
+results_df_Solar <- do.call(rbind, results_Solar)
+results_df_Solar$hour <- 0:23
+
+# Confidence intervals
+results_df_Solar <- results_df_Solar %>%
+  mutate(
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+
+# Plotting
+M_Solar <- ggplot(results_df_Solar, aes(x = hour, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    title = "Change in Day Ahead Price per GWh of daily solar",
+    x = "Hour",
+    y = "Change in Avg. Hourly Price (€/MWh)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.margin = unit(c(1, 1, 1, 1), "cm"), 
+    axis.title.y = element_text(angle = 90, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+
+# Gas Price
+
+results_Gas <- list()
+
+for (h in 0:23) {
+  # Filter data for the specific hour
+  Df_hourly <- Df2 %>% filter(hour == h)
+  
+  # Regression
+  formula <- Day_ahead ~ total_daily_solar + total_daily_wind + lagged_Gas_Price + Lignite + Load + Month
+  
+  # Fit the model
+  model <- lm(formula, data = Df_hourly)
+  
+
+  results_Gas[[h + 1]] <- tidy(model) %>% filter(term == c("lagged_Gas_Price")) %>% select(estimate, std.error)
+}
+
+
+results_df_Gas <- do.call(rbind, results_Gas)
+results_df_Gas$hour <- 0:23
+
+# Confidence intervals
+results_df_Gas <- results_df_Gas %>%
+  mutate(
+    conf.low = estimate - 1.96 * std.error,
+    conf.high = estimate + 1.96 * std.error
+  )
+
+# Plotting
+M_Gas <- ggplot(results_df_Gas, aes(x = hour, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  labs(
+    title = "Change in Day Ahead Price per $/MWh increase in natural gas price",
+    x = "Hour",
+    y = "Change in Avg. Hourly Price (€/MWh)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.margin = unit(c(1, 1, 1, 1), "cm"), 
+    axis.title.y = element_text(angle = 90, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5,face = "bold")
+  )
+
+```
+
+```{r}
+print(M_Solar)
+```
+
+```{r}
+print(M_Wind)
+```
+
+```{r}
+print(M_Gas)
+```
+
+# Substitution pattern between renewables and non-renewables
+
+## 1.) Preparation
+
+### 1.1) load data
+
+```{r, results= "hide"}
+Net_imports <- read_excel("Net_Imports.xlsx")
+Production <- read_excel("Production.xlsx",skip = 8)
+```
+### 1.2) Analysis of dataset and adjustments
+
+```{r}
+# First we look for any NA's
+colSums(is.na(Production))
+```
+
+```{r}
+# Checking class of Data
+sapply(Production,class)
+```
+
+```{r}
+# usual adjustments
+Production$Date_from <- as.POSIXct(Production$Date_from, format="%d.%m.%Y %H:%M", tz="UTC")
+Production$Date_to <- as.POSIXct(Production$Date_to, format="%d.%m.%Y %H:%M", tz="UTC")
+
+# adding columns
+Production$date <- as.Date(Production$Date_from)
+Production$hour <- hour(Production$Date_from)
+Production$year <- format(Production$Date_from, "%Y")
+Production$Month <- factor(Production$Month, levels = 1:12, labels = c(
+  "January", "February", "March", "April", "May", "June", 
+  "July", "August", "September", "October", "November", "December"))
+
+# Here we add the net import data
+Production$Net_Import <- as.numeric(Net_imports$Net_Imports)
+```
+
+```{r}
+# And again, we need to add the daily aggregates
+Df3 <- merge(Production, daily_totals, by = "date")
+```
+
+```{r}
+# This is the final dataset
+head(Df3)
+```
+### 2.) Estimation
+
+```{r}
+run_hourly_regressions <- function(data) {
+  results <- list()
+  
+  for (h in 0:23) {
+    # Filter data for the specific hour
+    Df_hourly <- data %>% filter(hour == h)
+    
+    # Define the models for each energy source
+    models <- list()
+    models$Nuclear <- lm(Nuclear ~ total_daily_solar + total_daily_wind + Thermal + other + Nuc1 + Nuc2 + Nuc3 + COVID + Month, data = Df_hourly)
+    
+    models$other <- lm(other ~ total_daily_solar + total_daily_wind + Nuclear + Thermal + COVID + Month, data = Df_hourly)
+    
+    models$Thermal <- lm(Thermal ~ total_daily_solar + total_daily_wind + Nuclear + other + COVID + Lignite1 + Lignite2 + Lignite3 + Lignite4 + Lignite5 + Lignite6 + Coal1 + Coal2 + Coal3 +  Month , data = Df_hourly)
+    
+    models$Net_Import <- lm(Net_Import ~ total_daily_solar + total_daily_wind + Thermal + other + Nuclear + COVID + Month, data = Df_hourly)
+    
+    results[[paste0("hour_", h)]] <- lapply(models, summary)
+  }
+  
+  return(results)
+}
+
+hourly_results <- run_hourly_regressions(Df3)
+
+# Here we define function to extract coefficients for plotting
+extract_coefficients <- function(results, variable) {
+  data <- data.frame(
+    Hour = 0:23,
+    Nuclear = sapply(0:23, function(h) coef(results[[paste0("hour_", h)]]$Nuclear)[variable, "Estimate"]),
+    other = sapply(0:23, function(h) coef(results[[paste0("hour_", h)]]$other)[variable, "Estimate"]),
+    Thermal = sapply(0:23, function(h) coef(results[[paste0("hour_", h)]]$Thermal)[variable, "Estimate"]),
+    Net_Imp = sapply(0:23, function(h) coef(results[[paste0("hour_", h)]]$Net_Import)[variable, "Estimate"])
+  )
+  return(data)
+}
+
+# 
+solar_coeffs <- extract_coefficients(hourly_results, "total_daily_solar")
+wind_coeffs <- extract_coefficients(hourly_results, "total_daily_wind")
+
+```
+
+```{r}
+# Plotting
+plot_coefficients <- function(coeffs, title) {
+  ggplot(coeffs, aes(x = Hour)) +
+    geom_line(aes(y = Nuclear, color = "Nuclear")) +
+    geom_line(aes(y = Thermal, color = "Thermal")) +
+    geom_line(aes(y = other, color = "Other")) +
+    geom_line(aes(y = Net_Imp, color = "Net Imports")) +
+    labs(title = title, y = "Avg. Change in Hourly Generation (MWh)", x = "Hour", color = "Source:") +
+    scale_color_manual(values = c("Nuclear" = "green", "Other" = "brown", "Thermal" = "blue", "Net Imports" = "black")) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+}
+
+# Plot for Solar
+plot_solar <- plot_coefficients(solar_coeffs, "Change in Output by Source per GWh of Daily Solar")
+
+# Plot for Wind
+plot_wind <- plot_coefficients(wind_coeffs, "Change in Output by Source per GWh of Daily Wind")
+```
+
+```{r}
+print(plot_solar)
+```
+
+```{r}
+print(plot_wind)
+```
+Here we check for the sums of the coefficients. 1 GWh increase in solar/wind output should decrease sum of the output from all other sources to the same amount:
+```{r}
+sum_hourly_changes <- function(coeffs) {
+  coeffs %>%
+    summarise(
+      Nuclear = sum(Nuclear),
+      Thermal = sum(Thermal),
+      other = sum(other),
+      Net_Imp = sum(Net_Imp),
+    )
+}
+
+# Summing the changes for solar
+solar_sums <- sum_hourly_changes(solar_coeffs)
+
+# Summing the changes for wind
+wind_sums <- sum_hourly_changes(wind_coeffs)
+```
+
+```{r}
+# For solar
+sum(solar_sums)
+```
+
+```{r}
+# For wind
+sum(wind_sums)
+```
+
+# Plots
+
+### Figure 3
+
+```{r}
+start_date <- as.Date("2018-10-02")
+end_date <- as.Date("2024-02-29")
+filtered_data <- Df2 %>%
+  filter(date >= start_date & date <= end_date)
+
+# Plot the data
+ggplot() +
+  geom_point(data = filtered_data, aes(x = date, y = total_daily_wind, color = "Daily Wind"), shape = 1) +
+  geom_point(data = filtered_data, aes(x = date, y = total_daily_solar, color = "Daily Solar"), shape = 17) +
+  labs(title = "Daily Solar and Wind Generation (October 2018 - February 2024)",
+       x = "Date", y = "Daily Generation (GWh)",color = "") +
+  scale_color_manual(values = c("Daily Solar" = "red", "Daily Wind" = "blue")) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"), 
+    plot.margin = unit(c(1, 1, 1, 1), "cm"), 
+    axis.title.y = element_text(angle = 90, vjust = 0.5,face = "bold") 
+  )
+```
+
+### Figure 4
+
+```{r}
+data_2019_2023 <- Df %>% filter(year %in% c("2019", "2023"))
+
+# Average hourly load for 2019 and 2023
+average_hourly_load <- data_2019_2023 %>%
+  group_by(year, hour) %>%
+  summarise(avg_load = mean(Load))
+
+ggplot(average_hourly_load, aes(x = as.numeric(hour), y = avg_load, color = year, group = year)) +
+  geom_line() +
+  labs(title="Average Hourly Load", x="Hour", y="Load (MW)") +
+  theme_minimal()
+
+# Average hourly solar generation for 2019 and 2023
+average_hourly_solar <- data_2019_2023 %>%
+  group_by(year, hour) %>%
+  summarise(avg_solar = mean(PH, na.rm=TRUE))
+
+ggplot(average_hourly_solar, aes(x = as.numeric(hour), y = avg_solar, color = year, group = year)) +
+  geom_line() +
+  labs(title="Average Hourly Solar Generation", x="Hour", y="Solar Generation (MWh)") +
+  theme_minimal()
+
+# Average hourly Day ahead price for 2019 and 2023
+average_hourly_day_ahead <- data_2019_2023 %>%
+  group_by(year, hour) %>%
+  summarise(avg_price = mean(Day_ahead))
+
+ggplot(average_hourly_day_ahead, aes(x = as.numeric(hour), y = avg_price, color = year, group = year)) +
+  geom_line() +
+  labs(title="Average Hourly Day ahead price", x="Hour", y="Price (€/MWh)") +
+  theme_minimal()
+
+
+# Average hourly wind generation for 2019 and 2023
+average_hourly_wind <- data_2019_2023 %>%
+  group_by(year, hour) %>%
+  summarise(avg_wind = mean(Wind_Total))
+
+
+ggplot(average_hourly_wind, aes(x = as.numeric(hour), y = avg_wind, color = year, group = year)) +
+  geom_line() +
+  labs(title="Average Hourly Wind Generation", x="Hour", y="Wind Generation (MWh)") +
+  theme_minimal() 
+
+
+# Plots
+p1 <- ggplot(average_hourly_load, aes(x = as.numeric(hour), y = avg_load, color = year, group = year)) + 
+  geom_line() + 
+  labs(title="Average Hourly Load", x="Hour", y="Load (MWh)") + 
+  theme_minimal()
+
+p2 <- ggplot(average_hourly_solar, aes(x = as.numeric(hour), y = avg_solar, color = year, group = year)) + 
+  geom_line() + 
+  labs(title="Average Hourly Solar Generation", x="Hour", y="Solar Generation (MWh)") + 
+  theme_minimal()
+
+p3 <- ggplot(average_hourly_day_ahead, aes(x = as.numeric(hour), y = avg_price, color = year, group = year)) + 
+  geom_line() + 
+  labs(title="Average Hourly Day ahead price", x="Hour", y="Price ($/MWh)") + 
+  theme_minimal()
+
+p4 <- ggplot(average_hourly_wind, aes(x = as.numeric(hour), y = avg_wind, color = year, group = year)) + 
+  geom_line() + 
+  labs(title="Average Hourly Wind Generation", x="Hour", y="Wind Generation (MWh)") + 
+  theme_minimal()
+
+
+grid.arrange(p2, p4, p1, p3, ncol = 2)
+
+```
+
+### Figure 5
+
+```{r}
+# Aggregate data to yearly totals
+yearly_data <- Production %>% 
+  group_by(year) %>%
+  summarise(across(c(Biomass, Hydropower, `Wind Total`, PV, `Natural gas`, Nuclear, Lignite, Coal), ~ sum(.x, na.rm = TRUE) / 1e6))
+yearly_data <-yearly_data[-c(1,7),]
+
+melted_data <- melt(yearly_data, id.vars = "year")
+
+ggplot(melted_data, aes(x = year, y = value, color = variable, group = variable)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(title = "Yearly Energy Production in Terawatt-hours (TWh)",
+       x = "Year",
+       y = "Energy Production (TWh)",
+       color = "Energy Source") +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+```
+
