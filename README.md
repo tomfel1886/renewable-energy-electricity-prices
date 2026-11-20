@@ -145,6 +145,10 @@ The analysis includes data preparation, hourly OLS regressions, and visualizatio
 
 The underlying datasets are not included due to potential redistribution restrictions. Reproducing the analysis requires obtaining the relevant data from the original providers.
 
+## Research Paper
+
+The accompanying research paper (paper.pdf) provides a detailed explanation of the research question, methodology, empirical results, and interpretation of the findings.
+
 ## Author
 
 **Thomas Felder**
